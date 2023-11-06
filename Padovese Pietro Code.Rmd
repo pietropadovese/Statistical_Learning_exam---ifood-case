@@ -1,0 +1,1305 @@
+---
+title: "Padovese Pietro Statistical Learning Exam"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-11-05"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+# Import the libraries
+
+set.seed(123)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(grid)
+library(readr)
+library(corrplot)
+library(car)
+library(cluster)
+library(factoextra)
+library(dendextend)
+library(caret)
+library(methods)
+library(yardstick)
+library(pROC)
+library(glmnet)
+library(randomForest)
+library(glmnet)
+library(MASS)
+```
+
+
+
+
+
+# **1) Description of Variables**
+
+* **AcceptedCmp1**: 1 if costumer accepted the offer in the first campaign, 0 otherwise
+* **AcceptedCmp2**: 1 if costumer accepted the offer in the second campaign, 0 otherwise
+* **AcceptedCmp3**: 1 if costumer accepted the offer in the third campaign, 0 otherwise
+* **AcceptedCmp4**: 1 if costumer accepted the offer in the fourth campaign, 0 otherwise
+* **AcceptedCmp5**: 1 if costumer accepted the offer in the fifth campaign, 0 otherwise
+* **AcceptedCmpOverall (target)**: 1 if costumer accepted the offer in the last campaign, 0 otherwise
+* **Complain**: 1 if customer complained in the last 2 years
+* **DtCustomer**: date of customer's enrollment with the company
+* **Education**: customer's level of education
+* **Marital**: customer's marital status
+* **Kidhome**: number of small children in customer's household
+* **Teenhome**: number of teenagers in customerìs household
+* **Income**: customer's yearly household income
+* **MntFishProducts**: amount spent on fish products in the last 2 years
+* **MntMeatProducts**: amount spent on meat products in the last 2 years
+* **MntFruits**: amount speant on fruits in the last 2 years
+* **MntSweetProducts**: amount spent on Sweet products in the last 2 years
+* **MntWines**: amount speant on Wines in the last 2 years
+* **MntGoldProds**: amount spent on gold products in the last 2 years
+* **NumDealsPurchases**: number of purchases made with a discount
+* **NumCatalogPurchases**: number of purchases made using catalogue
+* **NumStorePurcahses**: number of purchases made directly in stores
+* **NumWebPurchases**: number of purchases made trough company's web site
+* **NumWebVistisMonth**: number of visits to company's web site in the last month
+* **Recency**: number of days since the last purchase
+
+
+
+# **2) Data Cleaning**
+
+```{r message = FALSE, warning = FALSE, results='hide'}
+df = read_csv("ifood_df.csv")
+
+#Remove columns not needed
+
+df <- df %>%
+  dplyr::select(-c("Z_CostContact", "Z_Revenue", "ID"))
+```
+
+
+
+## **2.1) Null Values**
+
+```{r}
+#Visualize the variables for which we have null values
+na_counts <- sapply(df, function(x) sum(is.na(x)))
+na_counts
+```
+
+Replace Null Values in Income with median value
+
+```{r}
+df[which(is.na(df$Income)),]$Income <- median(df$Income[-which(is.na(df$Income))])
+```
+
+
+
+## **2.2) Outliers**
+
+Plot boxplots of numerical value to check for outliers
+
+```{r, fig.keep = "none"}
+mnt <- colnames(df %>% dplyr::select(starts_with("Mnt")))
+num <- colnames(df %>% dplyr::select(starts_with("Num")))
+numerical_col <- c("Year_Birth", "Income", "Recency", mnt, num, "Dt_Customer")
+
+for (col in numerical_col) {
+  data_to_plot <- df[[col]]
+  boxplot(data_to_plot, col = "lightblue", main = paste("Boxplot for", col))
+}
+```
+
+
+We have detected potential outliers in the Year_Birth and Income variables.
+
+Prepare the plot for the report: 
+
+* Income:
+
+```{r}
+p <- ggplot(df, aes(y= Income )) + geom_boxplot(fill = "lightblue", width = 0.1) +
+  xlim(-0.10,0.10) +
+  theme_bw() +
+  theme(text = element_text(family = "serif"),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(size = 18)) 
+
+  
+p  
+ggsave("Report/images/boxplot_income.png",  width = 7, height = 6)
+```
+
+* Year of Birth
+
+```{r}
+p <- ggplot(df, aes(y= Year_Birth )) + geom_boxplot(fill = "lightblue", width = 0.1) +
+  xlim(-0.10,0.10) +
+  theme_bw() +
+  theme(text = element_text(family = "serif"),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(size = 18))
+
+  
+p  
+ggsave("Report/images/boxplot_year.png", width = 7, height = 6)
+```
+
+
+Remove outliers for Year_Birth
+
+```{r}
+df <- df[-which(df$Year_Birth <= 1900),]
+# Remove all of them
+```
+
+
+I decide to remove the observation with the max income
+
+```{r}
+df <- df[-which(df$Income == max(df$Income)),]
+```
+
+
+## **2.3) Encoding Variables**
+
+
+The variables that need enconding are: 
+
+
+* Education (Basic, Graduation, 2n Cycle, Master, PhD)
+
+Master and 2n cycle are basically the same thing so we can create one column as the sum
+
+```{r}
+df <- df %>% 
+  mutate(Education = ifelse(Education == "2n Cycle", "Master", Education))
+```
+
+
+I will use Graduation variable as base level, since it is the most common one,  then create 4 new columns for the other values, then remove
+education (using Basic as base level gives problem with Multicolinearity since it has very few observations)
+
+```{r}
+df$Ed_Basic <- ifelse(df$Education =="Basic", 1, 0)
+df$Ed_Master <- ifelse(df$Education =="Master", 1, 0)
+df$Ed_PhD <- ifelse(df$Education =="PhD", 1, 0)
+df <- df %>% dplyr::select(-Education)
+
+```
+
+
+
+* Marital Status (Single, Together, Married, Divorced, Widow, Absurd, YOLO, Alone)
+
+Value Absurd, Alone and YOLO do not really make sense, i will put them in the category Single. 
+
+```{r}
+df <- df %>%
+  mutate(Marital_Status = ifelse(Marital_Status %in% c("Absurd", "Alone", "YOLO"), "Single", Marital_Status))
+```
+
+
+Now base value will be Single
+
+```{r}
+df$MS_Married <- ifelse(df$Marital_Status =="Married", 1, 0)
+df$MS_Together <- ifelse(df$Marital_Status =="Together", 1, 0)
+df$MS_Divorced <- ifelse(df$Marital_Status =="Divorced", 1, 0)
+df$MS_Widow <- ifelse(df$Marital_Status =="Widow", 1, 0)
+df <- df %>% dplyr::select(-Marital_Status)
+
+```
+
+
+## **2.4) Variable Transformation**
+
+Replace the Date a Customer has enrolled with the companies, with the number of days, he has been enrolled:
+
+```{r}
+max_Date <- max(df$Dt_Customer)
+
+df <- df %>%
+  mutate(enrollment_days = as.numeric(difftime(max_Date, df$Dt_Customer, units = "days")))
+
+df <- df %>% dplyr::select(-Dt_Customer)
+numerical_col = numerical_col[numerical_col != 'Dt_Customer']
+numerical_col = c(numerical_col, 'enrollment_days')
+```
+
+
+Change Year_Birth to Age
+
+```{r}
+df <- df%>%
+  mutate(Age = 2014 - Year_Birth)
+
+df <- df %>% dplyr::select(-Year_Birth)
+```
+
+
+```{r}
+# I keep track of the names of numerical variables in order to make it easy later to write code
+
+numerical_col = numerical_col[ !numerical_col == 'Year_Birth']
+numerical_col = c(numerical_col, "Age")
+```
+
+
+Aggregate the response for previous campaigns:
+
+```{r}
+df <- df %>%
+  mutate(CmpAccepted = rowSums(dplyr::select(df, contains("Accepted") )))
+Previous_campaing <- df%>% dplyr::select(starts_with("Accepted"))
+df <- df %>%
+  dplyr::select(-starts_with("Accepted"))
+```
+
+
+
+Rearrange the order of columns
+
+```{r}
+df <- df %>% relocate(contains("Accepted"), .after=last_col())
+df <- df %>% relocate(Response, .after=last_col())
+df <- df %>% relocate(Age) # default: move to first place
+df <- df %>% relocate(starts_with("Ed"), .after=Teenhome)
+df <- df %>% relocate(starts_with("MS"), .after=Ed_PhD)
+df <- df %>% relocate(enrollment_days, .after = MS_Widow)
+```
+
+
+
+
+# **3) EXPLORATORY DATA ANALYSIS**
+
+## **3.1) Response distribution**
+
+```{r}
+
+p <- ggplot(df, aes(x = as.factor(Response))) + 
+  
+  geom_bar(width = 0.5, aes(fill = as.factor(Response)), col = "black") + 
+  
+  theme_bw() +
+  
+  scale_fill_manual(values = c("lightblue", "orange")) +
+  
+  scale_x_discrete(labels=c("0" = "Not Accepted", "1" = "Accepted")) + 
+  
+  theme(text = element_text(family = "serif"),
+        legend.position = "none",
+        axis.text.x = element_text(size=12),
+        axis.title.x = element_blank()) +
+  
+  
+  geom_text(aes(y = ..count.., 
+            label = paste0(round(prop.table(..count..), 4) * 100, '%')), 
+            stat = 'count', 
+            position = position_dodge(0.3), 
+            size = 3.5,
+            vjust = - 0.75) +
+
+  ylim(c(0,2000))
+
+p
+
+ggsave("Report/images/acceptance_rate.png", width = 7, height = 6)
+```
+
+
+
+Graph for Age groups:
+
+```{r}
+Age <- cut(df$Age, c(18,30,40,50,60,80), include.lowest = TRUE)
+summary(Age)
+df$Age_range = Age
+```
+
+```{r}
+# Create a temporary df to store the Age range and the associated positive response percentage
+# This make it easier to retrieve these values when plotting
+summary_df <- df %>%
+  group_by(Age_range) %>%
+  summarize(
+    n = n(),
+    yes = sum(Response == 1),
+    percentage = mean(Response)*100
+  )
+```
+
+```{r}
+p <- ggplot(df, aes(x = Age_range)) + geom_bar(aes(fill = as.factor(Response)), col = "black")+
+  
+  geom_text(aes(y = ..count..), label = paste0(round(summary_df$percentage, 2), '%'), 
+              stat = 'count', 
+              position = position_dodge(0.3), 
+              size = 4,
+              vjust = -0.5) +
+  
+  theme_bw() +
+   
+  theme(text = element_text(family = "serif")) +
+  
+  scale_fill_manual(name = "",
+                    labels = c("Not Accepted", "Accepted"),
+                    values = c("lightblue", "orange")) +
+  
+  scale_x_discrete(labels = c("(18, 30]", "(30, 40]", "(40, 50]", 
+                              "(50 ,60]", "> 60"))
+p
+ggsave("Report/images/distribution_age.png", width = 8, height = 6)
+```
+
+```{r}
+df <- df %>% dplyr::select(-Age_range)
+```
+
+
+Graph for Income: 
+
+```{r}
+Income_range <- cut(df$Income, c(0,20000,40000,60000,80000, Inf), dig.lab = 6)
+df$Income_range = (Income_range)
+```
+
+
+
+
+```{r}
+summary_df <- df %>%
+  group_by(Income_range) %>%
+  summarize(
+    n = n(),
+    yes = sum(Response == 1),
+    percentage = mean(Response)*100
+  )
+```
+
+
+```{r}
+p <- ggplot(df, aes(x = Income_range)) + geom_bar(aes(fill = as.factor(Response)), col = "black")+
+  
+  geom_text(aes(y = ..count..), label = paste0(round(summary_df$percentage, 2), '%'), 
+              stat = 'count', 
+              position = position_dodge(0.3), 
+              size = 4,
+              vjust = -0.5) +
+  
+  theme_bw() +
+   
+  theme(text = element_text(family = "serif")) +
+  
+  scale_fill_manual(name = "",
+                    labels = c("Not Accepted", "Accepted"),
+                    values = c("lightblue", "orange")) +
+  scale_x_discrete(labels = c("(0, 20000]", "(20000, 40000]", "(40000, 60000]", 
+                              "(60000 ,80000]", "> 80000"))
+
+p
+
+ggsave("Report/images/distribution_income.png", width = 8, height = 6)
+```
+
+```{r}
+df <- df %>% dplyr::select(-Income_range)
+```
+
+
+Percentage of customer by how many campaigns they have accepted
+
+```{r}
+summary_df <- df %>%
+  group_by(CmpAccepted) %>%
+  summarize(
+    count = n(),
+    percentage = n()/length(df) 
+  )
+
+summary_df
+```
+
+
+
+## **3.2) Correlation**
+
+```{r}
+correlation_matrix <- cor(df)
+```
+
+
+
+```{r}
+# Nice function that i found online that makes the corrplot easier to read
+
+corr_simple <- function(data=df,sig=0.5){
+  #convert data to numeric in order to run correlations
+  #convert to factor first to keep the integrity of the data - each value will become a number rather than turn into NA
+  df_cor <- data %>% mutate_if(is.character, as.factor)
+  df_cor <- df_cor %>% mutate_if(is.factor, as.numeric)
+  #run a correlation and drop the insignificant ones
+  corr <- cor(df_cor)
+  #prepare to drop duplicates and correlations of 1     
+  corr[lower.tri(corr,diag=TRUE)] <- NA 
+  #drop perfect correlations
+  corr[corr == 1] <- NA 
+  #turn into a 3-column table
+  corr <- as.data.frame(as.table(corr))
+  #remove the NA values from above 
+  corr <- na.omit(corr) 
+  #select significant values  
+  corr <- subset(corr, abs(Freq) > sig) 
+  #sort by highest correlation
+  corr <- corr[order(-abs(corr$Freq)),] 
+  #print table
+  print(corr)
+  #turn corr back into matrix in order to plot with corrplot
+  mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+  
+  #plot correlations visually
+  corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ")
+}
+
+corr_simple()
+```
+
+
+
+Check the variance inflation factor
+
+```{r}
+vif_model <- glm(Response ~., data = df, family = "binomial")
+vif_values <- vif(vif_model)
+print(vif_values)
+```
+
+
+
+
+In order to avoid problem of multicollinearity and predictors with reduntant information, 
+I transform the varaibles containing the amount of money spent in each category of product
+and sale channel into their percentage with respect to the total amount spent. 
+
+
+```{r}
+money = df %>% dplyr::select(starts_with("Mnt")) %>% dplyr::select(-"MntGoldProds")
+df = df %>% mutate(
+  Total = rowSums(money),
+  MntWines = MntWines/Total*100,
+  MntFruits = MntFruits/Total*100,
+  MntFishProducts = MntFishProducts/Total*100,
+  MntMeatProducts = MntMeatProducts/Total*100,
+  MntSweetProducts = MntSweetProducts/Total*100,
+  MntGoldProds = MntGoldProds/Total*100
+) %>% dplyr::select(-Total, -MntMeatProducts)
+```
+
+
+```{r}
+purchases = df %>% dplyr::select(starts_with("Num")) %>% dplyr::select(-c("NumDealsPurchases", "NumWebVisitsMonth"))
+
+df = df %>% mutate(
+  Total = rowSums(purchases),
+  NumWebPurchases = ifelse(Total !=0, NumWebPurchases/Total *100, 0),
+  NumCatalogPurchases = ifelse(Total != 0, NumCatalogPurchases/Total*100, 0),
+  NumStorePurchases = ifelse(Total != 0, NumStorePurchases/Total*100,0)
+) %>% dplyr::select(-Total, -NumStorePurchases)
+```
+
+
+
+
+```{r}
+vif_model <- glm(Response ~., data = df, family = "binomial")
+vif_values <- vif(vif_model)
+print(vif_values)
+```
+
+
+# **4) UNSUPERVISED LEARNING**
+
+
+
+```{r}
+df_uns <- df %>% dplyr::select(-Response)
+```
+
+```{r}
+numerical_col = c(numerical_col, "Kidhome", "Teenhome", "CmpAccepted")
+numerical_col = numerical_col[! numerical_col %in% c("MntMeatProducts", "NumStorePurchases")]
+categorical_col <- colnames(df_uns %>% dplyr::select(-all_of(numerical_col)))
+```
+
+# **4.1) FULL SET OF VARIABLES**
+
+Try to cluster the data with hierarchical clustering
+
+
+```{r}
+# Select the columns that you want to include in the distance calculation
+temp_df <- as.data.frame(lapply(df_uns[, numerical_col], scale))
+
+# the transofrmation to factor of categorical columns is needed for the daisy
+# function to recognize them as such
+categorical_columns <- lapply(df_uns[, categorical_col], as.factor)
+numerical_columns <- temp_df[numerical_col]
+
+# Compute the Gower distance
+gower_distances <- daisy(cbind(categorical_columns, numerical_columns), metric = "gower")
+```
+
+
+
+
+```{r}
+hc <- hclust(gower_distances, method='complete')
+plot(hc)
+clusters <- cutree(hc, 3)
+table(clusters, df$Response)
+```
+
+
+
+```{r}
+df$cluster <- clusters
+df %>% group_by(cluster) %>% summarize(across(everything(), mean))
+```
+
+
+## **4.2) HIERARCHICAL CLUSTERING WITH TRANSFORMED VARIABLES**
+
+
+```{r}
+# df_uns_compact represents the dataframe with less binary variables
+
+df_uns_compact = df_uns
+df_uns_compact = df_uns_compact %>% 
+  mutate(
+  MS_Together = ifelse(MS_Together == 1 | MS_Married == 1, 1, 0),
+  Higher_ed = ifelse(Ed_Master == 1 | Ed_PhD == 1, 1, 0)) %>%
+  
+  dplyr::select(-c("Ed_Basic", "Ed_Master", "Ed_PhD", "MS_Married", "MS_Divorced", "MS_Widow"))
+
+# df_compact is the df_uns_compact plus the target variable
+df_compact = df_uns_compact
+df_compact$Response = df$Response
+```
+
+
+```{r}
+# Since we have change the categorical variables, we need a new vector to store
+# the names of this subset of categorical variables
+
+cat_red = categorical_col[! categorical_col %in% c("Ed_Basic", "Ed_Master", "Ed_PhD", "MS_Married", "MS_Divorced", "MS_Widow")]
+temp_df <- as.data.frame(lapply(df_uns_compact[, numerical_col], scale))
+categorical_columns <- lapply(df_uns_compact[, cat_red], as.factor)
+numerical_columns <- temp_df[numerical_col]
+
+# Compute the Gower distance
+gower_distances <- daisy(cbind(categorical_columns, numerical_columns), metric = "gower")
+```
+
+
+
+```{r}
+hc <- hclust(gower_distances, method='complete')
+plot(hc)
+clusters <- cutree(hc, 3)
+table(clusters, df_compact$Response)
+```
+
+```{r}
+df_compact$cluster <- clusters
+df_compact %>% group_by(cluster) %>% summarize(across(everything(), mean))
+```
+
+
+We note that a cluster is composed of only 4 observations, which have been classified as outliers.
+We try now to use again hierachical clustering without those observations
+
+
+```{r}
+index_to_remove = which(df_compact$cluster ==3)
+df_compact = df_compact[- which(colnames(df_compact) == "cluster")]
+
+#df_compact_removed and df_uns_compact_removed are the new version of the compact
+# dataframes without the outliers
+
+df_compact_removed = df_compact[-index_to_remove,]
+
+df_uns_compact_removed = df_compact_removed[-which(colnames(df_compact_removed)== "Response")]
+
+```
+
+
+
+
+```{r}
+temp_df <- as.data.frame(lapply(df_uns_compact_removed[, numerical_col], scale))
+categorical_columns <- lapply(df_uns_compact_removed[, cat_red], as.factor)
+numerical_columns <- temp_df[numerical_col]
+
+# Compute the Gower distance
+gower_distances <- daisy(cbind(categorical_columns, numerical_columns), metric = "gower")
+```
+
+
+```{r}
+hc <- hclust(gower_distances, method='complete')
+dend <- as.dendrogram(hc)
+dend %>% set("branches_k_color", 
+             value = c("red", "blue", "green", "orange", "purple"), k = 5) %>%
+  set("labels_col", "white") %>%
+   plot(cex = 0.001)
+
+clusters <- cutree(hc, 5)
+table(clusters, df_compact_removed$Response)
+```
+
+
+```{r}
+df_compact_removed$cluster = as.factor(clusters)
+df_compact_removed %>% group_by(cluster) %>% summarize(across(everything(), mean))
+```
+
+## **4.3) INSPECT THE RESULTS**
+
+In order to visualize also the differences among groups for the category of product
+and channel of sales that have been previously removed we add them back to the dataframe
+with reverse engineering.
+
+```{r}
+df_compact_removed$MntMeatProducts = 100 - rowSums(df_compact_removed[c("MntWines", "MntFruits", "MntFishProducts", "MntSweetProducts")])
+df_compact_removed$NumStorePurchases = 100 - rowSums(df_compact_removed[c("NumWebPurchases", "NumCatalogPurchases")])
+```
+
+
+We now create two functions to plot variables for each cluster.
+The *bars* function plots barplots of categorical and discrete variables. The bars represents the percentage of each cluster in one category. 
+The *densities* function plots density plots for continuous variables. 
+
+```{r}
+bars <- function(x, var) { #x = cluster, var = variable we want to plot
+  
+  # the levels represent the name of the clusters
+  levels = c("1", "2", "3", "4", "5")
+  res = x
+  
+  # colors and associated name are needed so that in the plot, only the cluster of interest
+  # will have a different color
+  colors = c(ifelse(levels == res, "gold1", "grey"))
+  names(colors) = levels
+  
+  # we want to compute the percentage of observation for each cluster that falls into each level
+  # the function table creates a table with a column cluster, and then one column for each level of the predictors
+  # the cells are filled with the number of observations that falls into that the level for each cluster
+  # then the function prob.table computes the frequency of each level by row
+  percentage_df <- as.data.frame(prop.table(
+    
+                    table(df_compact_removed[c("cluster", var)]),
+                    
+                    margin = 1))
+  
+  #create a new column called col in order to avoid problem of name references in the plot function
+  percentage_df$col = percentage_df[[var]]
+  
+  # plot the barplot where on the x we have the levels and on the y the relative frequency
+  ggplot(percentage_df, aes(x = col, y = Freq, fill = cluster)) +
+        
+    geom_bar(stat = "identity", position = "dodge", col = "black") +
+    
+    scale_fill_manual(values = colors) +
+    
+    theme_bw()+
+    
+    theme(text = element_text(family = "serif", size = 14),
+        axis.text.x  = element_text(size=22),
+        axis.text.y  = element_text(size=22)) +
+    
+    xlab(var)
+    
+}
+```
+
+
+
+
+```{r}
+densities <- function(x, var) {
+  
+  levels = c("1", "2", "3", "4", "5")
+  res = x
+  
+  colors = c(ifelse(levels == res, "gold1", "grey"))
+  names(colors) = levels
+  
+  # here we don't have to extrace the frequencies, but we just need the values
+  temp_df = data.frame(col = df_compact_removed[[var]], 
+                            "cluster" = df_compact_removed$cluster)
+  
+  # we reorder the cluster so that in the plot the cluster of interest will be plot
+  # in front of the ohters
+  temp_df$cluster = reorder(temp_df$cluster, temp_df$cluster == x) 
+  
+    
+  ggplot(temp_df, aes(fill = cluster, x = col)) +
+    
+    geom_density(position="identity", alpha = 0.5, col = "black") +
+    
+    scale_fill_manual(values = colors) +
+    
+    theme_bw()+
+    
+    theme(text = element_text(family = "serif", size = 14),
+          axis.text.x  = element_text(size=22),
+          axis.text.y  = element_text(size=22)) +
+    
+    xlab(var)
+}
+```
+
+
+
+Now for each cluster we just plot all the variables that we need for the report.
+Only the variables that showed an interesting pattern have been plotted. 
+
+```{r, fig.keep = "none"}
+bars("1", "Kidhome")
+ggsave("Report/images/group1_kid.png", width = 7, height = 5)
+bars("1", "Teenhome")
+ggsave("Report/images/group1_teen.png", width = 7, height = 5)
+bars("1", "MS_Together")
+ggsave("Report/images/group1_married.png", width = 7, height = 5)
+densities("1", "Income")
+ggsave("Report/images/group1_income.png", width = 7, height = 5)
+densities("1", "MntFruits")
+ggsave("Report/images/group1_fruits.png", width = 7, height = 5)
+densities("1", "MntWines")
+ggsave("Report/images/group1_wines.png", width = 7, height = 5)
+densities("1", "Age")
+ggsave("Report/images/group1_age.png", width = 7, height = 5)
+```
+
+
+```{r, fig.keep = "none"}
+bars("2", "Kidhome")
+ggsave("Report/images/group2_kid.png", width = 7, height = 5)
+bars("2", "Teenhome")
+ggsave("Report/images/group2_teen.png", width = 7, height = 5)
+bars("2", "MS_Together")
+ggsave("Report/images/group2_married.png", width = 7, height = 5)
+densities("2", "Income")
+ggsave("Report/images/group2_income.png", width = 7, height = 5)
+densities("2", "Age")
+ggsave("Report/images/group2_age.png", width = 7, height = 5)
+densities("2", "MntWines")
+ggsave("Report/images/group2_wines.png", width = 7, height = 5)
+densities("2", "MntMeatProducts")
+ggsave("Report/images/group2_meat.png", width = 7, height = 5)
+```
+
+
+```{r, fig.keep = "none"}
+bars("3", "Kidhome")
+ggsave("Report/images/group3_kid.png", width = 7, height = 5)
+bars("3", "Teenhome")
+ggsave("Report/images/group3_teen.png", width = 7, height = 5)
+bars("3", "MS_Together")
+ggsave("Report/images/group3_married.png", width = 7, height = 5)
+bars("3", "Response")
+ggsave("Report/images/group3_response.png", width = 7, height = 5)
+densities("3", "Income")
+ggsave("Report/images/group3_income.png", width = 7, height = 5)
+densities("3", "MntGoldProds") + xlim(0,50)
+ggsave("Report/images/group3_gold.png", width = 7, height = 5)
+```
+
+
+```{r, fig.keep = "none"}
+bars("4", "Kidhome")
+ggsave("Report/images/group4_kid.png", width = 7, height = 5)
+bars("4", "Teenhome")
+ggsave("Report/images/group4_teen.png", width = 7, height = 5)
+bars("4", "MS_Together")
+ggsave("Report/images/group4_married.png", width = 7, height = 5)
+bars("4", "Response")
+ggsave("Report/images/group4_response.png", width = 7, height = 5)
+densities("4", "Income")
+ggsave("Report/images/group4_income.png", width = 7, height = 5)
+densities("4", "MntGoldProds") + xlim(0,50)
+ggsave("Report/images/group4_gold.png", width = 7, height = 5)
+densities("4", "Age")
+ggsave("Report/images/group4_age.png", width = 7, height = 5)
+densities("4", "MntSweetProducts")
+ggsave("Report/images/group4_sweet.png", width = 7, height = 5)
+densities("4", "MntFruits")
+ggsave("Report/images/group4_fruits.png", width = 7, height = 5)
+```
+
+
+```{r, fig.keep = "none"}
+bars("5", "Kidhome")
+ggsave("Report/images/group5_kid.png", width = 7, height = 5)
+bars("5", "Teenhome")
+ggsave("Report/images/group5_teen.png", width = 7, height = 5)
+bars("5", "MS_Together")
+ggsave("Report/images/group5_married.png", width = 7, height = 5)
+bars("5", "Response")
+ggsave("Report/images/group5_response.png", width = 7, height = 5)
+densities("5", "Age")
+ggsave("Report/images/group5_age.png", width = 7, height = 5)
+densities("5", "MntMeatProducts")
+ggsave("Report/images/group5_meat.png", width = 7, height = 5)
+densities("5", "MntWines")
+ggsave("Report/images/group5_wines.png", width = 7, height = 5)
+```
+
+
+
+
+
+
+# **5) SUPERVISED LEARNING**
+
+
+```{r}
+df <- df %>% dplyr::select(-cluster)
+```
+
+
+```{r}
+split_train_test <- createDataPartition(df$Response, p=0.8, list=FALSE)
+dtrain <- df[split_train_test,]
+dtest <-  df[-split_train_test,]
+```
+
+
+For what I want to do later, I found it easier to create a *Model* class, which use the predicted
+probabilities and the provided treshold to make predictions and store the results in terms of precison
+and recall
+
+```{r}
+
+setClass("Model", representation(
+  
+  predicted_prob = "numeric",       # predicted probabilities computed by the algorithm for each observation       
+  
+  treshold = "numeric",             # threshold according to which the algorithm classify the observation
+  
+  predicted_class = "numeric",      
+  
+  pr_data = "tbl_df",               # attribute in which is store the precision recall curve
+  
+  precision = "numeric",
+  
+  recall = "numeric",
+  
+  auc_pr = "numeric",               # Area under the curve of the precision recall curve
+  
+  response = "numeric",             # Target variable
+  
+  conf_matrix = "table",            # confusion matrix
+  
+  event_level = "character"         # a string needed to specify whether the positive class is observed as first or second in the dataset
+))
+
+# method to initialize the confusion matrix
+
+initialize_conf_matrix <- function(.Object) {
+  
+  #add the attribute to the Object
+  .Object@conf_matrix <-  as.table(confusionMatrix(as.factor(.Object@predicted_class), 
+                              as.factor(.Object@response)))
+  
+  #return the object
+  .Object
+  
+}
+
+
+# method to initialize the other attributes not provided by the user
+
+initialize_values <- function(.Object, event_level) {
+  
+  data <- data.frame(truth = as.factor(.Object@response),
+                               pred_prob = .Object@predicted_prob,
+                               pred_class = as.factor(.Object@predicted_class))
+  
+  auc_pr <- data %>%
+              pr_auc(truth, pred_prob, event_level = event_level)
+            
+  recall <- data %>%
+              recall(truth, pred_class, event_level = event_level)
+            
+  precision <- data %>%
+              precision(truth, pred_class, event_level = event_level)
+            
+            
+  .Object@auc_pr <- auc_pr$.estimate
+  .Object@recall <- recall$.estimate
+  .Object@precision <- precision$.estimate
+                               
+  return(.Object)
+  
+}
+
+#initialize the attributes passed by the user
+
+setMethod("initialize", "Model", 
+          
+          function(.Object, predicted_prob, 
+                   predicted_class, treshold, 
+                   Response = dtest$Response,
+                   event_level = "first") {
+            
+                        .Object@predicted_prob = predicted_prob
+                    
+                        .Object@treshold = treshold
+                    
+                        .Object@predicted_class = ifelse(.Object@predicted_prob > .Object@treshold, 1,0)
+                    
+                        .Object@response = Response
+                    
+                        .Object@event_level = event_level
+                    
+                        .Object <- initialize_conf_matrix(.Object)
+                    
+                        .Object <- initialize_values(.Object, .Object@event_level)
+                    
+                        return(.Object)
+            
+                }
+)
+
+#create a method to prince the precision recall curve
+
+setGeneric("print_pr", function(.Object) standardGeneric("print_pr"))
+
+setMethod("print_pr", signature(.Object = "Model"),
+          function(.Object) {
+            
+            data <- data.frame(truth = as.factor(.Object@response),
+                               pred_prob = .Object@predicted_prob,
+                               pred_class = as.factor(.Object@predicted_class))
+            
+            pr_data <- data %>%
+              pr_curve(truth, pred_prob, event_level = .Object@event_level)
+            
+            pr_plot <- pr_data %>% autoplot()
+            
+            return(pr_plot)
+            
+          })
+```
+
+
+
+## **5.1) Logistic Model**
+
+
+```{r}
+#fit the logistic model
+logistic_model <-glm(Response ~., data=dtrain , family="binomial" )
+summary(logistic_model)
+```
+
+
+```{r}
+logistic_prediction <- data.frame(predict(logistic_model, dtest, type= "response"))
+logistic_prediction <- logistic_prediction[[1]]
+```
+
+
+With the lines of code below (which recur later for each model) the predicted probabilities
+are used to predict the class of each observations using different thresholds. The results
+are then stored in a dataframe
+
+```{r}
+logistic_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.99, by = 0.01)) {
+  
+  logistic <- new("Model", predicted_prob = logistic_prediction,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = logistic@precision, 
+                    recall = logistic@recall)
+  
+  logistic_results <- rbind(logistic_results, row)
+  
+}
+
+```
+
+
+
+
+
+## **5.2) STEPWISE SELECTION LOGISTIC MODEL**
+
+
+```{r}
+
+fullModel = glm(Response ~., data = df, family = "binomial")
+nullModel = glm(Response ~1, data = df, family = "binomial")
+step_logistic <- stepAIC(nullModel, 
+                direction = 'forward',
+                scope = list(upper = fullModel, 
+                             lower = nullModel), trace = FALSE)
+summary(step_logistic)
+```
+
+
+```{r}
+step_logistic_prediction <- data.frame(predict(step_logistic, dtest, type= "response"))
+step_logistic_prediction <- step_logistic_prediction[[1]]
+```
+
+
+```{r}
+step_logistic_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.99, by = 0.01)) {
+  
+  step_logistic <- new("Model", predicted_prob = step_logistic_prediction,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = step_logistic@precision, 
+                    recall = step_logistic@recall)
+  
+  step_logistic_results <- rbind(step_logistic_results, row)
+  
+}
+```
+
+
+## **5.3 LASSO FOR BINARY**
+
+
+Since Lasso regression puts constraints on the size of the coefficients, which depend on the magnitude of the varaibles, before applying it, I scaled all the numerical variables
+
+
+```{r}
+dtrain_scale <- dtrain
+dtrain_scale[numerical_col] = as.data.frame(lapply(dtrain[numerical_col], scale))
+dtest_scale <- dtest
+dtest_scale[numerical_col] = as.data.frame(lapply(dtest[numerical_col], scale))
+```
+
+
+```{r}
+#i create the variable x/y train and test because the glmnet requires different
+#arguments than glm
+
+x_train = as.matrix(dtrain_scale[,-which(names(df) =="Response")])
+y_train = dtrain_scale$Response
+x_test = as.matrix(dtest_scale[,-which(names(df) =="Response")])
+y_test = dtest_scale$Response
+
+#use cross valdiation to determine the best value for lambda
+lasso_cv <- cv.glmnet(x_train, y_train, alpha=1, family = "binomial")
+plot(lasso_cv)
+#select the highest value of lambda within one standard deviation from the minimum value
+optimal_lambda <- lasso_cv$lambda.1se
+```
+
+
+
+
+```{r}
+lasso_model <- glmnet(x_train, y_train, alpha = 1, family = "binomial",
+                      lambda = optimal_lambda)
+```
+
+
+
+
+```{r}
+lasso_pred <- predict(lasso_model, newx = x_test, s=optimal_lambda, type = "response")
+lasso_prob <- lasso_pred[,1]
+```
+
+
+
+```{r}
+lasso_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.90, by = 0.01)) {
+  
+  lasso <- new("Model", predicted_prob = lasso_prob,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = lasso@precision, 
+                    recall = lasso@recall)
+  
+  lasso_results <- rbind(lasso_results, row)
+  
+}
+
+
+```
+
+
+
+
+
+
+
+
+
+## **5.4 Linear Discriminant Analysis**
+
+
+```{r}
+lda_model <- lda(Response~.,data = dtrain)
+```
+
+
+Show the coefficient of the first discriminant function: 
+
+```{r}
+variable_names <- colnames(dplyr::select(df, -Response))
+lda_coefficients_with_names <- data.frame(Coefficient = lda_model$scaling)
+print(format(arrange(lda_coefficients_with_names, desc(abs(LD1))), scientific = FALSE))
+```
+
+
+
+
+```{r}
+lda_prediction = predict(lda_model, dtest)
+lda_prob = as.data.frame(lda_prediction$posterior[,2])
+lda_prob = lda_prob[[1]]
+
+```
+
+
+
+
+
+```{r}
+lda_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.99, by = 0.01)) {
+  
+  lda <- new("Model", predicted_prob = lda_prob,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = lda@precision, 
+                    recall = lda@recall)
+  
+  lda_results <- rbind(lda_results, row)
+  
+}
+
+```
+
+
+
+
+## **5.5) QDA**
+
+```{r}
+qda_model <- qda(Response ~., data = dtrain)
+```
+
+
+
+
+```{r}
+qda_prediction = predict(qda_model, dtest)
+qda_prob = as.data.frame(qda_prediction$posterior[,2])
+qda_prob = qda_prob[[1]]
+```
+
+
+
+```{r}
+qda_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.99, by = 0.01)) {
+  
+  qda <- new("Model", predicted_prob = qda_prob,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = qda@precision, 
+                    recall = qda@recall)
+  
+  qda_results <- rbind(qda_results, row)
+  
+  
+}
+```
+
+
+
+
+
+## **5.6) RANDOM FOREST**
+
+
+
+```{r}
+rf_model <- randomForest(as.factor(Response) ~ ., data = dtrain, ntree = 750, importance = TRUE, proximity = TRUE)
+```
+
+
+```{r}
+rf_prediction = predict(rf_model, dtest, type = "prob")
+rf_prob = as.data.frame(rf_prediction[,2])
+rf_prob = rf_prob[[1]]
+```
+
+
+```{r}
+rf_results = data.frame(treshold = numeric(0), 
+                              precision = numeric(0), 
+                              recall = numeric(0))
+
+for (value in seq(0.01, 0.8, by = 0.01)) {
+  
+  rf <- new("Model", predicted_prob = rf_prob,
+                treshold = value, event_level = "second")
+  
+  row <- data.frame(treshold = value,
+                    precision = rf@precision, 
+                    recall = rf@recall)
+  
+  rf_results <- rbind(rf_results, row)
+  
+  
+}
+
+```
+
+
+
+```{r}
+varImpPlot(rf_model)
+```
+
+
+
+
